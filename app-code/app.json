@@ -26,6 +26,14 @@
     "plugins": [
       "expo-router",
       [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow GeoWake to access your location at all times to monitor your destination proximity in the background.",
+          "locationWhenInUsePermission": "Allow GeoWake to access your location in the foreground.",
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#208AEF",
