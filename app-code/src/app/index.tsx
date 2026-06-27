@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -11,11 +12,59 @@ import { useTheme } from '@/hooks/use-theme';
 type CombinedPermissionState = 'Checking...' | 'Granted' | 'Denied';
 type PermissionStatusType = Location.PermissionStatus | 'not-supported' | null;
 
+// Target destination coordinates for testing (e.g. near Colombo/Malabe, Sri Lanka)
+const TARGET_LAT = 6.9147;
+const TARGET_LON = 79.9733;
+const ALARM_RADIUS_METERS = 1000;
+const BACKGROUND_LOCATION_TASK = 'BACKGROUND_LOCATION_TASK';
+
+// Haversine formula to calculate distance in meters between two coordinates
+function getHaversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3; // Radius of Earth in meters
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+      
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// Define background task at root level (global scope)
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+  if (error) {
+    console.error('Background location task error:', error);
+    return;
+  }
+  if (data) {
+    const { locations } = data as { locations: Location.LocationObject[] };
+    if (locations && locations.length > 0) {
+      const { latitude, longitude } = locations[0].coords;
+      const distance = getHaversineDistance(latitude, longitude, TARGET_LAT, TARGET_LON);
+      
+      console.log(
+        `[Background Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target: ${distance.toFixed(1)}m`
+      );
+
+      if (distance < ALARM_RADIUS_METERS) {
+        console.log('ALARM WAKE UP: Arriving soon!');
+      }
+    }
+  }
+});
+
 export default function HomeScreen() {
   const theme = useTheme();
   const [permissionState, setPermissionState] = useState<CombinedPermissionState>('Checking...');
   const [fgStatus, setFgStatus] = useState<PermissionStatusType>(null);
   const [bgStatus, setBgStatus] = useState<PermissionStatusType>(null);
+  const [isCommuting, setIsCommuting] = useState<boolean>(false);
+  const [webLocationSubscription, setWebLocationSubscription] = useState<Location.LocationSubscription | null>(null);
 
   const checkAndRequestPermissions = async () => {
     try {
@@ -41,7 +90,7 @@ export default function HomeScreen() {
       // 2. Check and request Background Location permissions (not supported on web)
       if (Platform.OS === 'web') {
         setBgStatus('not-supported');
-        setPermissionState('Granted'); // Default to granted on web if foreground is OK
+        setPermissionState('Granted');
         return;
       }
 
@@ -66,11 +115,101 @@ export default function HomeScreen() {
     }
   };
 
+  // Check if the background task is currently active/tracking
+  const checkIfCommuting = async () => {
+    try {
+      if (Platform.OS !== 'web') {
+        const hasStarted = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+        setIsCommuting(hasStarted);
+      }
+    } catch (error) {
+      console.error('Error checking active location tasks:', error);
+    }
+  };
+
   useEffect(() => {
     checkAndRequestPermissions();
   }, []);
 
-  // Configure UI representation based on current state
+  useEffect(() => {
+    if (permissionState === 'Granted') {
+      checkIfCommuting();
+    }
+  }, [permissionState]);
+
+  // Clean up the web location subscription when unmounting
+  useEffect(() => {
+    return () => {
+      if (webLocationSubscription) {
+        webLocationSubscription.remove();
+      }
+    };
+  }, [webLocationSubscription]);
+
+  // Toggle starting or stopping background updates
+  const handleToggleCommute = async () => {
+    try {
+      if (Platform.OS === 'web') {
+        if (isCommuting) {
+          if (webLocationSubscription) {
+            webLocationSubscription.remove();
+            setWebLocationSubscription(null);
+          }
+          setIsCommuting(false);
+          console.log('Successfully stopped web location tracking.');
+        } else {
+          console.log('Starting web location tracking...');
+          const subscription = await Location.watchPositionAsync(
+            {
+              accuracy: Location.Accuracy.Balanced,
+              timeInterval: 5000, // Update every 5 seconds
+              distanceInterval: 10, // Update every 10 meters
+            },
+            (locationObject) => {
+              const { latitude, longitude } = locationObject.coords;
+              const distance = getHaversineDistance(latitude, longitude, TARGET_LAT, TARGET_LON);
+              
+              console.log(
+                `[Web Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target: ${distance.toFixed(1)}m`
+              );
+
+              if (distance < ALARM_RADIUS_METERS) {
+                console.log('ALARM WAKE UP: Arriving soon!');
+              }
+            }
+          );
+          setWebLocationSubscription(subscription);
+          setIsCommuting(true);
+          console.log('Successfully started web location tracking.');
+        }
+        return;
+      }
+
+      // Mobile (Android/iOS) background updates
+      if (isCommuting) {
+        await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+        setIsCommuting(false);
+        console.log('Successfully stopped background location tracking.');
+      } else {
+        await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 5000, // Update every 5 seconds
+          distanceInterval: 10, // Update every 10 meters
+          foregroundService: {
+            notificationTitle: 'GeoWake Commute Active 🚌',
+            notificationBody: 'Monitoring location to alert you near your destination.',
+            notificationColor: '#10B981',
+          },
+        });
+        setIsCommuting(true);
+        console.log('Successfully started background location tracking.');
+      }
+    } catch (error) {
+      console.error('Error toggling location updates:', error);
+    }
+  };
+
+  // Configure UI representation based on permission status
   const getStatusConfig = () => {
     switch (permissionState) {
       case 'Granted':
@@ -121,6 +260,7 @@ export default function HomeScreen() {
             Your Smart Transit Wake-up Alarm
           </ThemedText>
 
+          {/* Permissions Status Card */}
           <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
             <View style={styles.cardHeader}>
               <ThemedText type="subtitle" style={styles.cardIcon}>
@@ -161,6 +301,48 @@ export default function HomeScreen() {
             )}
           </View>
 
+          {/* Commute Management Section */}
+          {permissionState === 'Granted' && (
+            <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
+              <View style={styles.cardHeader}>
+                <ThemedText type="subtitle" style={styles.cardIcon}>
+                  {isCommuting ? '🛰️' : '💤'}
+                </ThemedText>
+                <View style={styles.statusTextContainer}>
+                  <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                    Commute Status
+                  </ThemedText>
+                  <ThemedText
+                    type="subtitle"
+                    style={[
+                      styles.statusText,
+                      { color: isCommuting ? '#10B981' : theme.textSecondary },
+                    ]}>
+                    {isCommuting ? 'Active Tracking' : 'Idle'}
+                  </ThemedText>
+                </View>
+              </View>
+
+              <ThemedText type="default" style={styles.cardDesc}>
+                {isCommuting
+                  ? `Active tracking to target coordinates (${TARGET_LAT}, ${TARGET_LON}). You'll receive logs when you are within ${ALARM_RADIUS_METERS}m.`
+                  : 'Start tracking to begin monitoring distance to your destination stop.'}
+              </ThemedText>
+
+              <TouchableOpacity
+                style={[
+                  styles.commuteButton,
+                  { backgroundColor: isCommuting ? '#EF4444' : '#10B981' },
+                ]}
+                onPress={handleToggleCommute}>
+                <ThemedText type="smallBold" style={{ color: '#ffffff' }}>
+                  {isCommuting ? '⏹️ Stop Commute' : '▶️ Start Commute'}
+                </ThemedText>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Detailed Permissions Status */}
           <View style={styles.detailsContainer}>
             <View style={styles.detailRow}>
               <ThemedText type="small" style={{ color: theme.textSecondary }}>
@@ -259,6 +441,13 @@ const styles = StyleSheet.create({
   },
   button: {
     paddingVertical: Spacing.two + 4,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: Spacing.two,
+  },
+  commuteButton: {
+    paddingVertical: Spacing.three,
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
