@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 
+import MapPicker from '@/components/map-picker';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
@@ -12,11 +13,19 @@ import { useTheme } from '@/hooks/use-theme';
 type CombinedPermissionState = 'Checking...' | 'Granted' | 'Denied';
 type PermissionStatusType = Location.PermissionStatus | 'not-supported' | null;
 
-// Target destination coordinates for testing (e.g. near Colombo/Malabe, Sri Lanka)
-const TARGET_LAT = 6.9147;
-const TARGET_LON = 79.9733;
+interface LocationCoordinate {
+  latitude: number;
+  longitude: number;
+}
+
+// Default initial coordinates (near Colombo/Malabe, Sri Lanka)
+const INITIAL_LAT = 6.9147;
+const INITIAL_LON = 79.9733;
 const ALARM_RADIUS_METERS = 1000;
 const BACKGROUND_LOCATION_TASK = 'BACKGROUND_LOCATION_TASK';
+
+// Shared memory coordinate accessible by the background task
+let sharedTargetLocation = { latitude: INITIAL_LAT, longitude: INITIAL_LON };
 
 // Haversine formula to calculate distance in meters between two coordinates
 function getHaversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -45,10 +54,15 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const { locations } = data as { locations: Location.LocationObject[] };
     if (locations && locations.length > 0) {
       const { latitude, longitude } = locations[0].coords;
-      const distance = getHaversineDistance(latitude, longitude, TARGET_LAT, TARGET_LON);
+      const distance = getHaversineDistance(
+        latitude,
+        longitude,
+        sharedTargetLocation.latitude,
+        sharedTargetLocation.longitude
+      );
       
       console.log(
-        `[Background Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target: ${distance.toFixed(1)}m`
+        `[Background Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target (${sharedTargetLocation.latitude.toFixed(4)}, ${sharedTargetLocation.longitude.toFixed(4)}): ${distance.toFixed(1)}m`
       );
 
       if (distance < ALARM_RADIUS_METERS) {
@@ -65,6 +79,17 @@ export default function HomeScreen() {
   const [bgStatus, setBgStatus] = useState<PermissionStatusType>(null);
   const [isCommuting, setIsCommuting] = useState<boolean>(false);
   const [webLocationSubscription, setWebLocationSubscription] = useState<Location.LocationSubscription | null>(null);
+
+  // Target Location State (Defaults to Sri Lanka Colombo/Malabe testing coords)
+  const [targetLocation, setTargetLocation] = useState<LocationCoordinate>({
+    latitude: INITIAL_LAT,
+    longitude: INITIAL_LON,
+  });
+
+  // Keep background task shared target coordinates updated
+  useEffect(() => {
+    sharedTargetLocation = targetLocation;
+  }, [targetLocation]);
 
   const checkAndRequestPermissions = async () => {
     try {
@@ -167,10 +192,15 @@ export default function HomeScreen() {
             },
             (locationObject) => {
               const { latitude, longitude } = locationObject.coords;
-              const distance = getHaversineDistance(latitude, longitude, TARGET_LAT, TARGET_LON);
+              const distance = getHaversineDistance(
+                latitude,
+                longitude,
+                sharedTargetLocation.latitude,
+                sharedTargetLocation.longitude
+              );
               
               console.log(
-                `[Web Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target: ${distance.toFixed(1)}m`
+                `[Web Location] Current: (${latitude.toFixed(4)}, ${longitude.toFixed(4)}) | Distance to target (${sharedTargetLocation.latitude.toFixed(4)}, ${sharedTargetLocation.longitude.toFixed(4)}): ${distance.toFixed(1)}m`
               );
 
               if (distance < ALARM_RADIUS_METERS) {
@@ -251,121 +281,132 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.content}>
-          <ThemedText type="title" style={styles.title}>
-            GeoWake 🚌
-          </ThemedText>
-          <ThemedText type="default" style={styles.subtitle}>
-            Your Smart Transit Wake-up Alarm
-          </ThemedText>
+      <SafeAreaView style={styles.safeArea} edges={['right', 'left', 'bottom']}>
+        {/* Map Destination Picker */}
+        <MapPicker
+          targetLocation={targetLocation}
+          onSelectLocation={setTargetLocation}
+        />
 
-          {/* Permissions Status Card */}
-          <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
-            <View style={styles.cardHeader}>
-              <ThemedText type="subtitle" style={styles.cardIcon}>
-                {statusConfig.icon}
-              </ThemedText>
-              <View style={styles.statusTextContainer}>
-                <ThemedText type="small" style={{ color: theme.textSecondary }}>
-                  Permission Status
-                </ThemedText>
-                <ThemedText
-                  type="subtitle"
-                  style={[styles.statusText, { color: statusConfig.color }]}>
-                  {permissionState}
-                </ThemedText>
-              </View>
-            </View>
-
-            <ThemedText type="default" style={styles.cardDesc}>
-              {statusConfig.desc}
+        <ScrollView 
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}>
+          <View style={styles.content}>
+            <ThemedText type="title" style={styles.title}>
+              GeoWake 🚌
+            </ThemedText>
+            <ThemedText type="default" style={styles.subtitle}>
+              Your Smart Transit Wake-up Alarm
             </ThemedText>
 
-            {permissionState === 'Checking...' && (
-              <ActivityIndicator
-                size="small"
-                color={theme.text}
-                style={styles.loader}
-              />
-            )}
-
-            {permissionState === 'Denied' && (
-              <TouchableOpacity
-                style={[styles.button, { backgroundColor: theme.backgroundSelected }]}
-                onPress={checkAndRequestPermissions}>
-                <ThemedText type="smallBold" style={{ color: theme.text }}>
-                  Grant Location Permissions
-                </ThemedText>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Commute Management Section */}
-          {permissionState === 'Granted' && (
+            {/* Permissions Status Card */}
             <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
               <View style={styles.cardHeader}>
                 <ThemedText type="subtitle" style={styles.cardIcon}>
-                  {isCommuting ? '🛰️' : '💤'}
+                  {statusConfig.icon}
                 </ThemedText>
                 <View style={styles.statusTextContainer}>
                   <ThemedText type="small" style={{ color: theme.textSecondary }}>
-                    Commute Status
+                    Permission Status
                   </ThemedText>
                   <ThemedText
                     type="subtitle"
-                    style={[
-                      styles.statusText,
-                      { color: isCommuting ? '#10B981' : theme.textSecondary },
-                    ]}>
-                    {isCommuting ? 'Active Tracking' : 'Idle'}
+                    style={[styles.statusText, { color: statusConfig.color }]}>
+                    {permissionState}
                   </ThemedText>
                 </View>
               </View>
 
               <ThemedText type="default" style={styles.cardDesc}>
-                {isCommuting
-                  ? `Active tracking to target coordinates (${TARGET_LAT}, ${TARGET_LON}). You'll receive logs when you are within ${ALARM_RADIUS_METERS}m.`
-                  : 'Start tracking to begin monitoring distance to your destination stop.'}
+                {statusConfig.desc}
               </ThemedText>
 
-              <TouchableOpacity
-                style={[
-                  styles.commuteButton,
-                  { backgroundColor: isCommuting ? '#EF4444' : '#10B981' },
-                ]}
-                onPress={handleToggleCommute}>
-                <ThemedText type="smallBold" style={{ color: '#ffffff' }}>
-                  {isCommuting ? '⏹️ Stop Commute' : '▶️ Start Commute'}
+              {permissionState === 'Checking...' && (
+                <ActivityIndicator
+                  size="small"
+                  color={theme.text}
+                  style={styles.loader}
+                />
+              )}
+
+              {permissionState === 'Denied' && (
+                <TouchableOpacity
+                  style={[styles.button, { backgroundColor: theme.backgroundSelected }]}
+                  onPress={checkAndRequestPermissions}>
+                  <ThemedText type="smallBold" style={{ color: theme.text }}>
+                    Grant Location Permissions
+                  </ThemedText>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Commute Management Section */}
+            {permissionState === 'Granted' && (
+              <View style={[styles.card, { backgroundColor: theme.backgroundElement }]}>
+                <View style={styles.cardHeader}>
+                  <ThemedText type="subtitle" style={styles.cardIcon}>
+                    {isCommuting ? '🛰️' : '💤'}
+                  </ThemedText>
+                  <View style={styles.statusTextContainer}>
+                    <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                      Commute Status
+                    </ThemedText>
+                    <ThemedText
+                      type="subtitle"
+                      style={[
+                        styles.statusText,
+                        { color: isCommuting ? '#10B981' : theme.textSecondary },
+                      ]}>
+                      {isCommuting ? 'Active Tracking' : 'Idle'}
+                    </ThemedText>
+                  </View>
+                </View>
+
+                <ThemedText type="default" style={styles.cardDesc}>
+                  {isCommuting
+                    ? `Tracking active to (${targetLocation.latitude.toFixed(4)}, ${targetLocation.longitude.toFixed(4)}). You will be alerted when within ${ALARM_RADIUS_METERS}m.`
+                    : 'Tap on the map above to select your destination stop, then tap Start Commute.'}
                 </ThemedText>
-              </TouchableOpacity>
-            </View>
-          )}
 
-          {/* Detailed Permissions Status */}
-          <View style={styles.detailsContainer}>
-            <View style={styles.detailRow}>
-              <ThemedText type="small" style={{ color: theme.textSecondary }}>
-                Foreground Location
-              </ThemedText>
-              <ThemedText
-                type="smallBold"
-                style={{ color: getStatusColor(fgStatus) }}>
-                {getStatusLabel(fgStatus)}
-              </ThemedText>
-            </View>
-            <View style={styles.detailRow}>
-              <ThemedText type="small" style={{ color: theme.textSecondary }}>
-                Background Location
-              </ThemedText>
-              <ThemedText
-                type="smallBold"
-                style={{ color: getStatusColor(bgStatus) }}>
-                {getStatusLabel(bgStatus)}
-              </ThemedText>
+                <TouchableOpacity
+                  style={[
+                    styles.commuteButton,
+                    { backgroundColor: isCommuting ? '#EF4444' : '#10B981' },
+                  ]}
+                  onPress={handleToggleCommute}>
+                  <ThemedText type="smallBold" style={{ color: '#ffffff' }}>
+                    {isCommuting ? '⏹️ Stop Commute' : '▶️ Start Commute'}
+                  </ThemedText>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Detailed Permissions Status */}
+            <View style={styles.detailsContainer}>
+              <View style={styles.detailRow}>
+                <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                  Foreground Location
+                </ThemedText>
+                <ThemedText
+                  type="smallBold"
+                  style={{ color: getStatusColor(fgStatus) }}>
+                  {getStatusLabel(fgStatus)}
+                </ThemedText>
+              </View>
+              <View style={styles.detailRow}>
+                <ThemedText type="small" style={{ color: theme.textSecondary }}>
+                  Background Location
+                </ThemedText>
+                <ThemedText
+                  type="smallBold"
+                  style={{ color: getStatusColor(bgStatus) }}>
+                  {getStatusLabel(bgStatus)}
+                </ThemedText>
+              </View>
             </View>
           </View>
-        </View>
+        </ScrollView>
       </SafeAreaView>
     </ThemedView>
   );
@@ -379,11 +420,18 @@ const styles = StyleSheet.create({
   },
   safeArea: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingBottom: BottomTabInset + Spacing.three,
+    width: '100%',
     maxWidth: MaxContentWidth,
+  },
+  scrollView: {
+    flex: 1,
+    width: '100%',
+  },
+  scrollContent: {
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.four,
+    paddingBottom: BottomTabInset + Spacing.four,
+    alignItems: 'center',
   },
   content: {
     width: '100%',
