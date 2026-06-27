@@ -25,7 +25,12 @@
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
-      "package": "com.beamingsubjection990.geowake"
+      "package": "com.beamingsubjection990.geowake",
+      "config": {
+        "googleMaps": {
+          "apiKey": "DUMMY_KEY_FOR_TESTING"
+        }
+      }
     },
     "web": {
       "output": "static",
